@@ -1,24 +1,19 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
-node_modules
-dist
-dist-ssr
-*.local
+# Virtual env
+venv/
+.env
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
+# Mac
 .DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+
+# Front (si/quad tu remets React)
+front/node_modules/
+front/dist/
+
+# Modèles lourds (choisir A ou B ci-dessous)
+pretrained_model/*.dat
