@@ -1,61 +1,82 @@
-# Easy Facial Recognition
+# Face Recognition Client
 
-Recognition by minimum norm between vectors (128D dlib descriptor)
-![Alt Text](readme.gif)
+Application **full-stack** de reconnaissance faciale en **temps réel**.  
+Basée sur **Python/dlib** pour l’API et **React (Vite)** pour le client web.
+
+---
+
+## 🚀 Installation & Lancement
+
+### 1) Back (API Python)
+```bash
+cd back/face_api
+python -m venv .venv
+
+# macOS/Linux
+source .venv/bin/activate
+
+# Windows
+.venv\Scripts\activate
+
+pip install -r requirements.txt
+Lancer l’API :
+
+python app.py
 
 
-### Prerequisites
+Les visages connus doivent être placés dans :
 
-#### Install requirements
+back/face_api/known_faces/
+├── Yanice.png
+├── Zuckerberg.png
+└── ...
 
-Make sure to have the following libraries installed in your Python environment:
+2) Front (React + Vite)
+cd front
+npm install
+npm run dev
 
-- opencv
-- dlib
-- numpy
-- imutils
-- pillow
 
-#### Setup faces to recognize
+Par défaut l’app sera dispo sur :
+👉 http://localhost:5173
 
-Update the `known_faces` directory with images of people you want to detect and be sure to crop around the faces as the Zuckerberg example (if you don't, the program execution might raise an error).
+⚙️ Fonctionnement
 
-Please only use .jpg or .png image format files in the `known_faces` folder.
+Le front (React) ouvre la webcam et capture les frames.
 
-For instance, you may have the following files:
+Les images sont envoyées à l’API Python (app.py).
 
-```
-/known_faces/Zuckerberg.png
-/known_faces/YourPicture.jpg
-```
+face_core.py génère un vecteur 128D dlib et compare aux embeddings des known_faces/.
 
-Note that the recognition name displayed is taken from the file name (without extension) it matches in the `known_faces` folder.
+Le nom du match (ou "Unknown") est renvoyé au front et affiché à l’écran.
 
-#### Camera
+🛠️ Dépendances principales
+Back
 
-You need a camera connected to your PC since the program will stream the image of camera on your screen and will recognize the face displayed should the face be part of the `known_faces` folder.
+Python 3.9+
 
-## Run
+dlib
 
-```
-easy_facial_recognition.py --i known_faces
-```
-## Youtube Video explanation (French only)
-Click on the image below:
+opencv-python
 
-[![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/54WmrwVWu1w/0.jpg)](https://www.youtube.com/watch?v=54WmrwVWu1w)
+numpy
 
-## Authors
+imutils
 
-* **Anis Ayari** - *Lead Data Scientist* 
+Pillow
 
-## License
+Front
 
-This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details
+Node.js 18+
 
-## Windows environment Notes
+React 18
 
-On Windows, you may have to additionnally install:
-- opencv-python
-- CMake
-- Visual Studio and the extension for C++ so that `dlib` installation completes successfully
+Vite
+
+👤 Auteur
+
+Yanice Belhadj — Software Development Engineer
+
+📝 Licence
+
+MIT — voir LICENSE.md
