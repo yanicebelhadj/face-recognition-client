@@ -21,3 +21,11 @@ export async function recognizeDraw(file) {
   const blob = await r.blob();
   return URL.createObjectURL(blob);
 }
+export async function addFace(name, file) {
+    const form = new FormData();
+    form.append("name", name);
+    form.append("file", file);
+    const r = await fetch(`${API_URL}/add-face`, { method: "POST", body: form });
+    return r.json();
+  }
+  

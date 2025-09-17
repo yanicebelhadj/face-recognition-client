@@ -11,6 +11,11 @@ export default function App() {
   const videoRef = useRef(null);
   const overlayRef = useRef(null);
   const loopRef = useRef(null); // id du setInterval
+  const inflightRef = useRef(false);
+
+  const CAP_W = 640; // capture à largeur fixe pour maitriser le scale
+  let capH = null;   // sera calculé dès que la vidéo est prête
+
 
   useEffect(() => {
     (async () => {
@@ -24,49 +29,55 @@ export default function App() {
   // Démarrer webcam + boucle live
   useEffect(() => {
     let stopped = false;
-
-    async function startCam() {
+    (async () => {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      if (!videoRef.current) return;
-      videoRef.current.srcObject = stream;
-
-      // attendre la taille vidéo
-      await new Promise(res => {
-        videoRef.current.onloadedmetadata = () => res();
-      });
-
       const video = videoRef.current;
-      const canvas = overlayRef.current;
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-
-      // Boucle live (5 FPS = toutes les 200 ms)
+      video.srcObject = stream;
+      await new Promise(r => video.onloadedmetadata = r);
+  
+      // Dimensions de capture normales
+      capH = Math.round(video.videoHeight * (CAP_W / video.videoWidth));
+  
+      // Ajuste l'overlay pour "coller" visuellement à la vidéo visible
+      const overlay = overlayRef.current;
+      const rect = video.getBoundingClientRect();
+      overlay.style.position = "absolute";
+      overlay.style.left = "0";
+      overlay.style.top = "0";
+      overlay.style.width = "100%";
+      overlay.style.height = "100%";
+  
       loopRef.current = setInterval(async () => {
-        if (stopped) return;
+        if (stopped || inflightRef.current) return;
+        inflightRef.current = true;
         try {
-          // capture → blob
+          // 1) Capture à CAP_W x capH (réduit la charge et fixe l’échelle)
           const tmp = document.createElement("canvas");
-          tmp.width = video.videoWidth; tmp.height = video.videoHeight;
-          tmp.getContext("2d").drawImage(video, 0, 0, tmp.width, tmp.height);
+          tmp.width = CAP_W; tmp.height = capH;
+          const tctx = tmp.getContext("2d");
+          tctx.drawImage(video, 0, 0, tmp.width, tmp.height);
           const blob = await new Promise(r => tmp.toBlob(r, "image/png"));
           const file = new File([blob], "frame.png", { type: "image/png" });
-
-          // appel JSON (plus léger que l'image annotée)
+  
+          // 2) Envoi au back
           const form = new FormData();
           form.append("file", file);
           const r = await fetch(import.meta.env.VITE_API_URL + "/recognize", { method: "POST", body: form });
-          if (!r.ok) return;
-          const data = await r.json();
-
-          drawOverlay(canvas, data);
+          const data = await recognize(file);
+          console.log("DATA from API:", data);
+          drawOverlay(overlayRef.current, data, CAP_W, capH);
+          if (r.ok) {
+            const data = await r.json();
+            drawOverlay(overlayRef.current, data, CAP_W, capH); // passer dims de capture
+          }
         } catch (e) {
-          // silencieux pour éviter de spam la console
+          // no-op
+        } finally {
+          inflightRef.current = false;
         }
-      }, 200);
-    }
-
-    startCam();
-
+      }, 50); 
+    })();
+  
     return () => {
       stopped = true;
       if (loopRef.current) clearInterval(loopRef.current);
@@ -76,29 +87,48 @@ export default function App() {
   }, []);
 
   // Dessin overlay
-  function drawOverlay(canvas, data) {
+  function drawOverlay(canvas, data, srcW, srcH) {
+    if (!canvas) return;
     const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
   
-    (data.faces || []).forEach(face => {
-      const [top, right, bottom, left] = face.box;
-      const a = face.attributes || {};
-      const label = `${a.age ?? "?"}y ${a.hair_color || "?"} hair ${a.eye_color || "?"} eyes`;
+    // Ajuste le canvas à la taille affichée de la vidéo (CSS)
+    const displayW = canvas.clientWidth;
+    const displayH = canvas.clientHeight;
+    if (canvas.width !== displayW) canvas.width = displayW;
+    if (canvas.height !== displayH) canvas.height = displayH;
   
-      ctx.lineWidth = 3;
+    const scaleX = displayW / srcW;
+    const scaleY = displayH / srcH;
+  
+    ctx.clearRect(0, 0, displayW, displayH);
+    ctx.lineWidth = 3;
+    ctx.font = "16px ui-sans-serif";
+    ctx.textBaseline = "top";
+  
+    const faces = data.faces || null;
+    const boxes = faces ? faces.map(f => f.box) : (data.boxes || []);
+    const labels = faces ? faces.map(f => f.attributes ? `${f.attributes.age ?? "?"}y` : "Face") : (data.names || []);
+  
+    for (let i = 0; i < boxes.length; i++) {
+      const [top, right, bottom, left] = boxes[i];
+      const x = Math.round(left * scaleX);
+      const y = Math.round(top * scaleY);
+      const w = Math.round((right - left) * scaleX);
+      const h = Math.round((bottom - top) * scaleY);
+  
       ctx.strokeStyle = "rgb(0,255,0)";
-      ctx.strokeRect(left, top, right - left, bottom - top);
+      ctx.strokeRect(x, y, w, h);
   
-      ctx.font = "16px ui-sans-serif";
-      ctx.textBaseline = "top";
+      const label = labels[i] || "Unknown";
       const pad = 4, textH = 18;
       const textW = ctx.measureText(label).width;
       ctx.fillStyle = "rgb(0,255,0)";
-      ctx.fillRect(left, bottom - textH, textW + pad * 2, textH);
+      ctx.fillRect(x, y + h - textH, textW + pad * 2, textH);
       ctx.fillStyle = "black";
-      ctx.fillText(label, left + pad, bottom - textH + 2);
-    });
+      ctx.fillText(label, x + pad, y + h - textH + 2);
+    }
   }
+  
   
 
   // --- le reste (tests JSON / image annotée) peut rester identique ---
