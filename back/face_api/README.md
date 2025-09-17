@@ -6,7 +6,6 @@ Basée sur **Python/dlib** pour l’API et **React (Vite)** pour le client web.
 ---
 
 ## 🚀 Installation & Lancement
-```bash
 ### 1) Back (API Python)
 
 cd back/face_api
@@ -42,10 +41,10 @@ npm run dev
 
 Par défaut l’app sera dispo sur :
 👉 http://localhost:5173
-```
+
 
 ## ⚙️ Fonctionnement
-```bash
+
 Le front (React) ouvre la webcam et capture les frames.
 
 Les images sont envoyées à l’API Python (app.py).
@@ -53,10 +52,10 @@ Les images sont envoyées à l’API Python (app.py).
 face_core.py génère un vecteur 128D dlib et compare aux embeddings des known_faces/.
 
 Le nom du match (ou "Unknown") est renvoyé au front et affiché à l’écran.
-```
+
 
 ## 🛠️ Dépendances principales
-```bash
+
 ### Back
 
 Python 3.9+
@@ -71,12 +70,12 @@ Pillow
 Node.js 18+
 React 18
 Vite
-```
+
 
 ## 👤 Auteur
-```bash
+
 Yanice Belhadj — Software Development Engineer
-```
+
 
 ## 📝 Licence
 ```bash
