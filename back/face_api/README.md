@@ -26,9 +26,6 @@ python app.py
 Les visages connus doivent être placés dans :
 
 back/face_api/known_faces/
-├── Yanice.png
-├── Zuckerberg.png
-└── ...
 
 ---
 
