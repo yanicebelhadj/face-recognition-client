@@ -31,7 +31,10 @@ back/face_api/known_faces/
 ├── Zuckerberg.png
 └── ...
 
-2) Front (React + Vite)
+---
+
+### 2) Front (React + Vite)
+```bash
 cd front
 npm install
 npm run dev
