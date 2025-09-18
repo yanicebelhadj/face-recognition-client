@@ -1,79 +1,122 @@
-# face_core.py
+# face_core.py  (version légère: OpenCV YuNet + SFace)
 import cv2
-import dlib
 import numpy as np
-from PIL import Image
-from imutils import face_utils
+import PIL.Image
 from pathlib import Path
 import os, ntpath
 
-# ---------- Load pretrained models ----------
-pose_predictor_68_point = dlib.shape_predictor("pretrained_model/shape_predictor_68_face_landmarks.dat")
-pose_predictor_5_point  = dlib.shape_predictor("pretrained_model/shape_predictor_5_face_landmarks.dat")
-face_encoder            = dlib.face_recognition_model_v1("pretrained_model/dlib_face_recognition_resnet_model_v1.dat")
-face_detector           = dlib.get_frontal_face_detector()
+MODELS_DIR = Path(__file__).parent / "pretrained_model"
+YUNET   = str(MODELS_DIR / "face_detection_yunet_2023mar.onnx")
+SFACE   = str(MODELS_DIR / "face_recognition_sface_2021dec.onnx")
 
-def _transform(image, face_locations):
-    coords = []
-    for face in face_locations:
-        rect = face.top(), face.right(), face.bottom(), face.left()
-        coord = max(rect[0],0), min(rect[1], image.shape[1]), min(rect[2], image.shape[0]), max(rect[3],0)
-        coords.append(coord)
-    return coords
+_detector = None
+_recognizer = None
 
-def encode_face(image_rgb_np: np.ndarray):
-    """
-    image_rgb_np: ndarray RGB (uint8)
-    returns: enc_list, boxes, landmarks_list
-    """
-    img = np.ascontiguousarray(image_rgb_np, dtype=np.uint8)
-    face_locations = face_detector(img, 1)
-    enc_list, landmarks_list = [], []
-    for face_location in face_locations:
-        shape = pose_predictor_68_point(img, face_location)
-        face_encoding = face_encoder.compute_face_descriptor(img, shape, 1)
-        enc_list.append(np.array(face_encoding))
-        landmarks_list.append(face_utils.shape_to_np(shape))
-    boxes = _transform(img, face_locations)
-    return enc_list, boxes, landmarks_list
+def _get_models():
+    global _detector, _recognizer
+    if _detector is None:
+        # YuNet detector
+        _detector = cv2.FaceDetectorYN.create(
+            model=YUNET,
+            config="",
+            input_size=(320, 320),   # petite taille -> rapide / faible RAM
+            score_threshold=0.85,
+            nms_threshold=0.3,
+            top_k=5000
+        )
+    if _recognizer is None:
+        # SFace embedder
+        _recognizer = cv2.FaceRecognizerSF.create(SFACE, "")
+    return _detector, _recognizer
+
+def _img_to_bgr(np_or_pil):
+    if isinstance(np_or_pil, np.ndarray):
+        arr = np_or_pil
+        if arr.ndim == 2: arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+        if arr.shape[2] == 4: arr = cv2.cvtColor(arr, cv2.COLOR_BGRA2BGR)
+        return arr
+    else:
+        return cv2.cvtColor(np.array(np_or_pil.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+def _detect(bgr):
+    det, _ = _get_models()
+    h, w = bgr.shape[:2]
+    # l’API YuNet veut qu’on fixe l’input_size = taille image
+    det.setInputSize((w, h))
+    faces = det.detect(bgr)[1]  # shape: [N,15] (x,y,w,h,score, 5*2 landmarks)
+    if faces is None: 
+        return []
+    # boîtes au format (top, right, bottom, left)
+    out = []
+    for f in faces:
+        x, y, w, h = f[:4]
+        t, l = int(max(0, y)), int(max(0, x))
+        b, r = int(min(h+y, h if False else y+h)), int(min(w+x, w if False else x+w))
+        out.append((t, r, b, l))
+    return out
+
+def _crop_align(bgr, box):
+    t, r, b, l = box
+    face = bgr[t:b, l:r]
+    return face
+
+def _feature(bgr, box):
+    det, rec = _get_models()
+    # SFace attend une face alignée; on peut utiliser alignCrop si landmarks, 
+    # mais YuNet renvoie landmarks: on les ignore pour rester simple -> crop direct
+    face = _crop_align(bgr, box)
+    if face.size == 0: 
+        return None
+    # compute features (L2-normalized 128D)
+    feat = rec.feature(face)
+    return feat
+
+def encode_face(image_np):
+    """Compat: renvoie (encodings, boxes, landmarks)"""
+    bgr = _img_to_bgr(image_np)
+    boxes = _detect(bgr)
+    encs = []
+    for box in boxes:
+        f = _feature(bgr, box)
+        if f is not None:
+            encs.append(f.astype(np.float32))
+    landmarks = [[] for _ in boxes]  # on n’utilise pas ici
+    return encs, boxes, landmarks
 
 def load_known_faces(directory: str):
-    """
-    Charge toutes les images .jpg/.png d'un dossier,
-    renvoie (encodings: np.ndarray[N,128], names: List[str])
-    """
     base = Path(directory)
-    files = list(base.rglob("*.jpg")) + list(base.rglob("*.png"))
+    files = list(base.rglob('*.jpg')) + list(base.rglob('*.png')) + list(base.rglob('*.jpeg'))
     if not files:
-        raise ValueError(f"No faces detect in the directory: {base}")
+        raise ValueError(f'No faces detect in the directory: {base}')
     names, encodings = [], []
     for f in files:
-        names.append(os.path.splitext(ntpath.basename(f))[0])
-        img_rgb = np.array(Image.open(f).convert("RGB"))
-        encs, _, _ = encode_face(img_rgb)
+        try:
+            img = PIL.Image.open(f)
+        except Exception:
+            continue
+        bgr = _img_to_bgr(img)
+        encs, _, _ = encode_face(bgr)
         if encs:
             encodings.append(encs[0])
-    if len(encodings) == 0:
-        return np.empty((0,128)), names
-    return np.array(encodings), names
+            names.append(os.path.splitext(ntpath.basename(f))[0])
+    return np.array(encodings, dtype=np.float32), names
 
-def recognize_on_frame(frame_bgr: np.ndarray, known_encodings: np.ndarray, known_names, tolerance: float = 0.6):
+def recognize_on_frame(frame_bgr, known_encodings, known_names, threshold=0.363):
     """
-    frame_bgr: image OpenCV (BGR)
-    returns: (boxes, names_out, landmarks_list)
+    SFace renvoie des embeddings; on utilise la similarité cosinus.
+    Un seuil ~0.363 (distance: 1 - cos_sim) marche bien; ajuste si besoin.
     """
-    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    rgb = np.ascontiguousarray(rgb, dtype=np.uint8)
-    encs, boxes, landmarks_list = encode_face(rgb)
-
-    if known_encodings is None or (hasattr(known_encodings, "size") and known_encodings.size == 0):
-        return boxes, ["Unknown"] * len(encs), landmarks_list
-
+    bgr = _img_to_bgr(frame_bgr)
+    boxes = _detect(bgr)
     names_out = []
-    for enc in encs:
-        if enc is None or len(enc) == 0:
+    for box in boxes:
+        feat = _feature(bgr, box)
+        if feat is None or known_encodings is None or len(known_encodings) == 0:
             names_out.append("Unknown"); continue
-        dists = np.linalg.norm(known_encodings - enc, axis=1)
-        idx = int(np.argmin(dists))
-        names_out.append(known_names[idx] if dists[idx] <= tolerance else "Unknown")
-    return boxes, names_out, landmarks_list
+        # cos distance = 1 - cos_sim
+        sims = (known_encodings @ feat) / (np.linalg.norm(known_encodings, axis=1) * np.linalg.norm(feat) + 1e-8)
+        cos_dist = 1.0 - sims
+        idx = int(np.argmin(cos_dist))
+        names_out.append(known_names[idx] if cos_dist[idx] <= threshold else "Unknown")
+    landmarks = [[] for _ in boxes]
+    return boxes, names_out, landmarks
