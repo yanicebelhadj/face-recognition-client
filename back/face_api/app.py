@@ -14,9 +14,14 @@ KNOWN_DIR = os.getenv("KNOWN_FACES_DIR", "known_faces")
 app = FastAPI(title="Face API")
 
 origins = [
-    "http://localhost:5173", "http://127.0.0.1:5173",
-    "http://localhost:3000", "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://face-recognition-client-iota.vercel.app",  # front Vercel
+    "https://face-recognition-client-yd44.onrender.com",  # backend Render
 ]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,

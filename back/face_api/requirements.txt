@@ -5,3 +5,4 @@ dlib
 numpy
 imutils
 Pillow
+python-multipart
