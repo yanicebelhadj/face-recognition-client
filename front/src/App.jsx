@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { ping, health, recognize, recognizeDraw } from "./api";
+import ProfilesPanel from "./components/ProfilesPanel";
 
 export default function App() {
   const [status, setStatus] = useState("…");
@@ -128,16 +129,17 @@ export default function App() {
       ctx.fillText(label, x + pad, y + h - textH + 2);
     }
   }
-  
-  
 
   // --- le reste (tests JSON / image annotée) peut rester identique ---
 
   return (
     <div style={{ padding: 24, fontFamily: "ui-sans-serif, system-ui" }}>
-      <h1>Face Recognition — Front React</h1>
-      <p>Backend status: <b>{status}</b></p>
+      <h1>Real-Time Face Recognition</h1>
+      {status === "ok" ? (<p>All systems operational</p>) : (<p>System unavailable</p>)}
+      
       {healthInfo && <p>Known faces: <b>{healthInfo.known_faces_count}</b></p>}
+
+      <ProfilesPanel />
 
       <hr style={{ margin: "16px 0" }} />
 

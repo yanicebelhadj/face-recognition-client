@@ -2,6 +2,7 @@
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 import numpy as np, cv2, io, os
 from PIL import Image
 from pathlib import Path
@@ -12,6 +13,8 @@ from face_core import load_known_faces, recognize_on_frame
 KNOWN_DIR = os.getenv("KNOWN_FACES_DIR", "known_faces")
 
 app = FastAPI(title="Face API")
+
+app.mount("/known-faces", StaticFiles(directory=KNOWN_DIR), name="known_faces")
 
 origins = [
     "http://localhost:5173",
@@ -32,6 +35,35 @@ app.add_middleware(
 
 known_encodings = None
 known_names = None
+
+# ---- Profiles listing (1 image par personne) ----
+def _list_profiles():
+    base = Path(KNOWN_DIR)
+    exts = ["*.jpg","*.jpeg","*.png","*.JPG","*.JPEG","*.PNG"]
+    files = []
+    for e in exts:
+        files += list(base.rglob(e))
+
+    seen = {}
+    for f in files:
+        label = f.stem.split("_")[0]  # "Yanice_2" -> "Yanice"
+        if label not in seen:
+            seen[label] = f  # garde la 1ère occurrence
+
+    profiles = []
+    for label, path in seen.items():
+        profiles.append({
+            "name": label,
+            "filename": path.name,
+            "url": f"/known-faces/{path.name}",  # URL statique servie par FastAPI
+        })
+    return profiles
+
+@app.get("/profiles")
+def profiles():
+    profs = _list_profiles()
+    return {"count": len(profs), "profiles": profs}
+
 
 @app.on_event("startup")
 def _load_db():
