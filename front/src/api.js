@@ -22,10 +22,15 @@ export async function recognizeDraw(file) {
   return URL.createObjectURL(blob);
 }
 export async function addFace(name, file) {
-    const form = new FormData();
-    form.append("name", name);
-    form.append("file", file);
-    const r = await fetch(`${API_URL}/add-face`, { method: "POST", body: form });
-    return r.json();
-  }
+  const form = new FormData();
+  form.append("name", name);
+  form.append("file", file);
+  const r = await fetch(`${API_URL}/add-face`, { method: "POST", body: form });
+  return r.json();
+}
+
+export async function deleteFace(name) {
+  const r = await fetch(`${API_URL}/delete-face/${encodeURIComponent(name)}`, { method: "DELETE" });
+  return r.json();
+}
   

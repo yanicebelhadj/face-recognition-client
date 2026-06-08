@@ -115,6 +115,19 @@ async def add_face(name: str = Form(...), file: UploadFile = File(...)):
     known_encodings, known_names = load_known_faces(KNOWN_DIR)
     return {"status":"added","name":name}
 
+@app.delete("/delete-face/{name}")
+def delete_face(name: str):
+    global known_encodings, known_names
+    base = Path(KNOWN_DIR)
+    exts = ["jpg", "jpeg", "png", "JPG", "JPEG", "PNG"]
+    deleted = []
+    for ext in exts:
+        for f in list(base.glob(f"{name}.{ext}")) + list(base.glob(f"{name}_*.{ext}")):
+            f.unlink()
+            deleted.append(f.name)
+    known_encodings, known_names = load_known_faces(KNOWN_DIR)
+    return {"status": "deleted", "files": deleted}
+
 @app.post("/reload-known-faces")
 def reload_faces():
     global known_encodings, known_names
