@@ -147,7 +147,7 @@ export default function App() {
           </div>
         </div>
 
-        <footer>Powered by a Custom AI Engine (React + Python)</footer>
+        <footer>Powered by dlib Face Recognition · React + Python</footer>
       </section>
     </div>
   );
