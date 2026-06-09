@@ -23,6 +23,8 @@ origins = [
     "http://127.0.0.1:3000",
     "https://face-recognition-client-iota.vercel.app",  # front Vercel
     "https://face-recognition-client-yd44.onrender.com",  # backend Render
+    "https://yanicebelhadj.fr",  # portfolio
+    "https://www.yanicebelhadj.fr",
 ]
 
 app.add_middleware(
