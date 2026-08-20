@@ -1,91 +1,111 @@
-import { useEffect, useRef, useState } from "react";
-import { addFace, deleteFace } from "../api";
+/**
+ * Panneau des profils de la session courante.
+ *
+ * Les vignettes sont rendues depuis les photos stockées *localement* : aucune
+ * image n'est demandée au serveur, qui d'ailleurs n'en conserve aucune.
+ */
+import { useRef, useState } from "react";
 
-const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
-
-export default function ProfilesPanel() {
-  const [data, setData] = useState({ count: 0, profiles: [] });
+export default function ProfilesPanel({ profiles, loading, onAdd, onRemove, onClearAll }) {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState("");
   const inputRef = useRef(null);
 
-  async function load() {
-    try {
-      const res = await fetch(`${API}/profiles`);
-      const json = await res.json();
-      setData(json);
-    } catch {
-      console.error("Failed to load profiles");
-    }
-  }
-
-  useEffect(() => { load(); }, []);
-
-  function handleFileChange(e) {
-    const f = e.target.files[0];
-    if (!f) return;
-    setFile(f);
-    setPreview(URL.createObjectURL(f));
+  function selectFile(event) {
+    const selected = event.target.files?.[0];
+    if (!selected) return;
+    setFile(selected);
+    setPreview((previous) => {
+      if (previous) URL.revokeObjectURL(previous);
+      return URL.createObjectURL(selected);
+    });
+    setFormError("");
   }
 
   function resetForm() {
     setAdding(false);
     setName("");
     setFile(null);
-    setPreview(null);
-    setError("");
+    setPreview((previous) => {
+      if (previous) URL.revokeObjectURL(previous);
+      return null;
+    });
+    setFormError("");
     if (inputRef.current) inputRef.current.value = "";
   }
 
-  async function handleAdd() {
-    if (!name.trim()) { setError("Entrez un nom."); return; }
-    if (!file) { setError("Choisissez une photo."); return; }
-    setLoading(true);
-    setError("");
+  async function submit() {
+    if (!name.trim()) return setFormError("Entrez un nom.");
+    if (!file) return setFormError("Choisissez une photo.");
+
+    setBusy(true);
+    setFormError("");
     try {
-      await addFace(name.trim(), file);
-      await load();
+      await onAdd(name, file);
       resetForm();
-    } catch {
-      setError("Erreur lors de l'ajout.");
+    } catch (error) {
+      setFormError(error?.message || "Impossible d'ajouter ce profil.");
     } finally {
-      setLoading(false);
+      setBusy(false);
+    }
+    return undefined;
+  }
+
+  async function remove(profile) {
+    if (!confirm(`Supprimer « ${profile.name} » ?`)) return;
+    try {
+      await onRemove(profile.id);
+    } catch {
+      setFormError("Suppression impossible pour le moment.");
     }
   }
 
-  async function handleDelete(profileName) {
-    if (!confirm(`Supprimer "${profileName}" ?`)) return;
-    try {
-      await deleteFace(profileName);
-      await load();
-    } catch {
-      console.error("Erreur suppression");
-    }
+  async function clearAll() {
+    if (!confirm("Effacer tous vos visages ? Cette action est définitive.")) return;
+    await onClearAll();
   }
 
   return (
     <div className="profiles-panel">
-      <h2>Profils reconnus <span className="count">{data.count}</span></h2>
+      <h2>
+        Vos profils <span className="count">{profiles.length}</span>
+      </h2>
 
-      <div className="profiles">
-        {data.profiles.map(p => (
-          <div key={p.name} className="profile">
-            <div className="profile-img-wrap">
-              <img src={`${API}${p.url}`} alt={p.name} />
-              <button
-                className="delete-btn"
-                onClick={() => handleDelete(p.name)}
-                title={`Supprimer ${p.name}`}
-              >×</button>
+      <p className="privacy-note">
+        Vos photos restent sur cet appareil et ne sont visibles que dans cette session.
+      </p>
+
+      {loading ? (
+        <p className="muted">Chargement…</p>
+      ) : (
+        <div className="profiles">
+          {profiles.map((profile) => (
+            <div key={profile.id} className="profile">
+              <div className="profile-img-wrap">
+                {profile.photoUrl ? (
+                  <img src={profile.photoUrl} alt={profile.name} />
+                ) : (
+                  <div className="profile-img-fallback">{profile.name.slice(0, 1).toUpperCase()}</div>
+                )}
+                <button
+                  type="button"
+                  className="delete-btn"
+                  onClick={() => remove(profile)}
+                  title={`Supprimer ${profile.name}`}
+                >
+                  ×
+                </button>
+              </div>
+              <div className="label">{profile.name}</div>
             </div>
-            <div className="label">{p.name}</div>
-          </div>
-        ))}
-      </div>
+          ))}
+          {profiles.length === 0 && <p className="muted">Aucun visage enregistré pour l'instant.</p>}
+        </div>
+      )}
 
       {adding ? (
         <div className="add-form">
@@ -93,32 +113,35 @@ export default function ProfilesPanel() {
             type="text"
             placeholder="Nom de la personne"
             value={name}
-            onChange={e => setName(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && handleAdd()}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => event.key === "Enter" && submit()}
           />
           <label className="file-label">
-            {preview
-              ? <img src={preview} className="preview-img" alt="preview" />
-              : <span>+ Photo</span>
-            }
-            <input
-              ref={inputRef}
-              type="file"
-              accept="image/*"
-              onChange={handleFileChange}
-              hidden
-            />
+            {preview ? <img src={preview} className="preview-img" alt="Aperçu" /> : <span>+ Photo</span>}
+            <input ref={inputRef} type="file" accept="image/*" onChange={selectFile} hidden />
           </label>
-          {error && <p className="form-error">{error}</p>}
+          {formError && <p className="form-error">{formError}</p>}
           <div className="form-actions">
-            <button className="btn-confirm" onClick={handleAdd} disabled={loading}>
-              {loading ? "…" : "Ajouter"}
+            <button type="button" className="btn-confirm" onClick={submit} disabled={busy}>
+              {busy ? "Analyse…" : "Ajouter"}
             </button>
-            <button className="btn-cancel" onClick={resetForm}>Annuler</button>
+            <button type="button" className="btn-cancel" onClick={resetForm} disabled={busy}>
+              Annuler
+            </button>
           </div>
         </div>
       ) : (
-        <button className="btn-add" onClick={() => setAdding(true)}>+ Ajouter une personne</button>
+        <>
+          <button type="button" className="btn-add" onClick={() => setAdding(true)}>
+            + Ajouter une personne
+          </button>
+          {formError && <p className="form-error">{formError}</p>}
+          {profiles.length > 0 && (
+            <button type="button" className="btn-clear" onClick={clearAll}>
+              Tout effacer
+            </button>
+          )}
+        </>
       )}
     </div>
   );
