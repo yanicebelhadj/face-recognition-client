@@ -26,6 +26,12 @@ export class ApiError extends Error {
 
 const RETRIABLE_STATUSES = new Set([502, 503, 504]);
 
+// Render, sur le plan gratuit, répond 404 (et non 503) tant que l'instance
+// endormie n'a pas fini de redémarrer. Les routes dont on sait qu'elles
+// existent doivent donc réessayer sur 404, sans quoi un réveil un peu lent se
+// solde par une erreur définitive affichée à l'utilisateur.
+const COLD_START_STATUS = 404;
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -45,8 +51,9 @@ async function readError(response) {
  * @param {object} options
  * @param {number} options.retries  nombre de tentatives supplémentaires
  * @param {number} options.timeout  délai max par tentative (ms)
+ * @param {boolean} options.retryNotFound  réessayer sur 404 (réveil d'instance)
  */
-export async function request(path, { retries = 0, timeout = 20000, ...init } = {}) {
+export async function request(path, { retries = 0, timeout = 20000, retryNotFound = false, ...init } = {}) {
   let lastError = new ApiError("Requête non exécutée.");
 
   for (let attempt = 0; attempt <= retries; attempt += 1) {
@@ -64,7 +71,9 @@ export async function request(path, { retries = 0, timeout = 20000, ...init } = 
       const message = await readError(response);
       lastError = new ApiError(message, {
         status: response.status,
-        retriable: RETRIABLE_STATUSES.has(response.status),
+        retriable:
+          RETRIABLE_STATUSES.has(response.status) ||
+          (retryNotFound && response.status === COLD_START_STATUS),
       });
       if (!lastError.retriable) throw lastError;
     } catch (error) {
@@ -96,7 +105,7 @@ async function json(path, options) {
 
 /** Sonde le serveur en tolérant un long réveil (offre gratuite). */
 export function ping({ retries = 4 } = {}) {
-  return json("/ping", { retries, timeout: 25000 });
+  return json("/ping", { retries, timeout: 25000, retryNotFound: true });
 }
 
 export function health() {
@@ -107,7 +116,7 @@ export function health() {
 /* Profils — toujours dans le périmètre de la session courante            */
 /* --------------------------------------------------------------------- */
 export function fetchProfiles() {
-  return json("/api/profiles", { retries: 2 });
+  return json("/api/profiles", { retries: 3, retryNotFound: true });
 }
 
 /** Envoie une photo, récupère l'empreinte 128-D. La photo n'est pas stockée. */
@@ -115,7 +124,7 @@ export function enrollFace(name, file) {
   const form = new FormData();
   form.append("name", name);
   form.append("file", file);
-  return json("/api/faces", { method: "POST", body: form, retries: 1, timeout: 45000 });
+  return json("/api/faces", { method: "POST", body: form, retries: 2, retryNotFound: true, timeout: 45000 });
 }
 
 /** Rejoue les profils gardés localement (après un redémarrage de l'API). */
@@ -124,7 +133,8 @@ export function restoreFaces(profiles) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ profiles }),
-    retries: 2,
+    retries: 3,
+    retryNotFound: true,
   });
 }
 

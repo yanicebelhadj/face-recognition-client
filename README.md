@@ -15,7 +15,7 @@ l'hébergement ne coûte rien.
 
 | Donnée | Où elle vit | Durée |
 | --- | --- | --- |
-| Photos | Navigateur (IndexedDB) | Jusqu'à suppression par l'utilisateur |
+| Photos | Navigateur (IndexedDB, ou `localStorage` en repli) | Jusqu'à suppression par l'utilisateur |
 | Empreintes 128-D | Navigateur + cache RAM de l'API | Cache purgé après 6 h d'inactivité |
 | Identifiant de session | `localStorage` du navigateur | Jusqu'à « Tout effacer » |
 
@@ -41,6 +41,22 @@ JSON) — sans réenvoyer ni recalculer la moindre photo.
 
 Conséquence à connaître : vider les données du site efface les visages, et un
 autre navigateur ou un autre appareil repart d'une session vierge.
+
+### Quand le stockage du navigateur fait défaut
+
+IndexedDB est indisponible ou instable dans plusieurs contextes courants —
+navigateurs intégrés (WhatsApp, Instagram), navigation privée sur iOS, où WebKit
+ferme la connexion sous les pieds de la transaction. `lib/faceStore.js`
+rétrograde alors sans bruit :
+
+1. **IndexedDB** — cas normal, photo complète conservée ;
+2. **`localStorage`** — seule une vignette de 160 px est gardée, faute de quota,
+   mais la persistance reste réelle ;
+3. **mémoire** — dernier recours ; l'application reste utilisable le temps de la
+   visite, et le dit explicitement à l'utilisateur.
+
+Un échec d'écriture locale ne fait jamais échouer l'ajout d'un visage : celui-ci
+est déjà enrôlé côté API, seule la persistance est perdue.
 
 ---
 
@@ -92,7 +108,9 @@ subies :
 
 - **Mise en veille.** L'instance s'endort après ~15 min sans trafic et met 30 à
   60 s à redémarrer. Le client affiche « Démarrage du serveur… » et réessaie
-  avec un délai croissant, au lieu de conclure à une panne.
+  avec un délai croissant, au lieu de conclure à une panne. Pendant ce réveil,
+  le routeur de Render répond **404** — et non 503 : les routes dont on sait
+  qu'elles existent réessaient donc aussi sur ce code (`retryNotFound`).
 - **Disque éphémère.** Rien n'y est écrit — voir la section persistance.
 
 Ajoutez vos propres domaines aux origines CORS via la variable
@@ -131,7 +149,8 @@ back/face_api/
 front/src/
   api.js                    client HTTP (en-tête de session, réessais)
   lib/session.js            identifiant de session
-  lib/faceDb.js             stockage local des photos et empreintes
+  lib/faceStore.js          stockage local, avec replis successifs
+  lib/image.js              vignettes pour le repli localStorage
   hooks/useFaceProfiles.js  profils + synchronisation avec l'API
   hooks/useLiveRecognition.js  webcam et boucle d'analyse
   hooks/useApiStatus.js     état du serveur et réveil

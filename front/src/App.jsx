@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+
 import ProfilesPanel from "./components/ProfilesPanel";
 import { useApiStatus } from "./hooks/useApiStatus";
 import { useFaceProfiles } from "./hooks/useFaceProfiles";
@@ -12,7 +14,16 @@ const STATUS_LABELS = {
 
 export default function App() {
   const { status, retry } = useApiStatus();
-  const { profiles, loading, syncState, error, add, remove, clearAll, syncToServer } = useFaceProfiles();
+  const { profiles, loading, syncState, error, storageWarning, add, remove, clearAll, syncToServer } =
+    useFaceProfiles();
+
+  // La synchronisation n'a de sens qu'une fois l'instance réveillée : sur une
+  // offre gratuite, le premier appel peut arriver avant que le serveur ne
+  // réponde. On (re)joue donc l'alignement à chaque fois que l'API redevient
+  // disponible, plutôt qu'une seule fois au montage.
+  useEffect(() => {
+    if (status === "ok" && !loading) syncToServer({ force: true });
+  }, [status, loading, syncToServer]);
 
   const { videoRef, canvasRef, cameraError, cameraReady, latencyMs, faceCount } = useLiveRecognition({
     active: status === "ok",
@@ -48,6 +59,7 @@ export default function App() {
         </p>
       )}
       {error && <p className="banner error">{error}</p>}
+      {storageWarning && <p className="banner warning">{storageWarning}</p>}
 
       <section className="main">
         <div className="main-container">
