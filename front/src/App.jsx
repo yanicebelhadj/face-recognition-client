@@ -1,153 +1,87 @@
-import React, { useEffect, useRef, useState } from "react";
-import { ping, health, recognize } from "./api";
 import ProfilesPanel from "./components/ProfilesPanel";
+import { useApiStatus } from "./hooks/useApiStatus";
+import { useFaceProfiles } from "./hooks/useFaceProfiles";
+import { useLiveRecognition } from "./hooks/useLiveRecognition";
 import "./styles/app.scss";
 
+const STATUS_LABELS = {
+  ok: "Serveur opérationnel",
+  waking: "Démarrage du serveur…",
+  down: "Serveur injoignable",
+};
+
 export default function App() {
-  const [status, setStatus] = useState("…");
-  const [healthInfo, setHealthInfo] = useState(null);
+  const { status, retry } = useApiStatus();
+  const { profiles, loading, syncState, error, add, remove, clearAll, syncToServer } = useFaceProfiles();
 
-  // Webcam refs
-  const videoRef = useRef(null);
-  const overlayRef = useRef(null);
-  const loopRef = useRef(null);      // id du setInterval
-  const inflightRef = useRef(false);
-
-  const CAP_W = 640;                 // largeur de capture
-  let capH = null;                   // hauteur calculée à l’initialisation
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const p = await ping(); setStatus(p.status || "ok");
-        const h = await health(); setHealthInfo(h);
-      } catch {
-        setStatus("down");
-      }
-    })();
-  }, []);
-
-  // Démarrer webcam + boucle live
-  useEffect(() => {
-    let stopped = false;
-    (async () => {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      const video = videoRef.current;
-      video.srcObject = stream;
-      await new Promise(r => (video.onloadedmetadata = r));
-
-      // Dimensions de capture
-      capH = Math.round(video.videoHeight * (CAP_W / video.videoWidth));
-
-      loopRef.current = setInterval(async () => {
-        if (stopped || inflightRef.current) return;
-        inflightRef.current = true;
-        try {
-          // 1) Capture à CAP_W x capH (réduit la charge et fixe l’échelle)
-          const tmp = document.createElement("canvas");
-          tmp.width = CAP_W;
-          tmp.height = capH;
-          const tctx = tmp.getContext("2d");
-          tctx.drawImage(video, 0, 0, tmp.width, tmp.height);
-          const blob = await new Promise(r => tmp.toBlob(r, "image/png"));
-          const file = new File([blob], "frame.png", { type: "image/png" });
-
-          // 2) Envoi au back
-          const data = await recognize(file);
-          drawOverlay(overlayRef.current, data, CAP_W, capH);
-        } catch {
-          // no-op
-        } finally {
-          inflightRef.current = false;
-        }
-      }, 50);
-    })();
-
-    return () => {
-      stopped = true;
-      if (loopRef.current) clearInterval(loopRef.current);
-      const tracks = videoRef.current?.srcObject?.getTracks?.() || [];
-      tracks.forEach(t => t.stop());
-    };
-  }, []);
-
-  // Dessin overlay
-  function drawOverlay(canvas, data, srcW, srcH) {
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-
-    // Ajuste le canvas à la taille affichée (gérée par CSS)
-    const displayW = canvas.clientWidth;
-    const displayH = canvas.clientHeight;
-    if (canvas.width !== displayW) canvas.width = displayW;
-    if (canvas.height !== displayH) canvas.height = displayH;
-
-    const scaleX = displayW / srcW;
-    const scaleY = displayH / srcH;
-
-    ctx.clearRect(0, 0, displayW, displayH);
-    ctx.lineWidth = 3;
-    ctx.font = "16px ui-sans-serif";
-    ctx.textBaseline = "top";
-
-    const faces = data.faces || null;
-    const boxes = faces ? faces.map(f => f.box) : (data.boxes || []);
-    const labels = faces ? faces.map(f => f.attributes ? `${f.attributes.age ?? "?"}y` : "Face")
-                         : (data.names || []);
-
-    for (let i = 0; i < boxes.length; i++) {
-      const [top, right, bottom, left] = boxes[i];
-      const x = Math.round(left * scaleX);
-      const y = Math.round(top * scaleY);
-      const w = Math.round((right - left) * scaleX);
-      const h = Math.round((bottom - top) * scaleY);
-
-      ctx.strokeStyle = "rgb(0,255,0)";
-      ctx.strokeRect(x, y, w, h);
-
-      const label = labels[i] || "Unknown";
-      const pad = 4, textH = 18;
-      const textW = ctx.measureText(label).width;
-      ctx.fillStyle = "rgb(0,255,0)";
-      ctx.fillRect(x, y + h - textH, textW + pad * 2, textH);
-      ctx.fillStyle = "black";
-      ctx.fillText(label, x + pad, y + h - textH + 2);
-    }
-  }
+  const { videoRef, canvasRef, cameraError, cameraReady, latencyMs, faceCount } = useLiveRecognition({
+    active: status === "ok",
+    expectedFaces: profiles.length,
+    onDrift: syncToServer,
+  });
 
   return (
     <div className="app-container">
-
       <div className="header">
-        <h1>Real-Time Face Recognition</h1>
+        <h1>Reconnaissance faciale en temps réel</h1>
 
-        <div className={`status-bar ${status === "ok" ? "ok" : "down"}`}>
-          {status === "ok" ? "All systems operational" : "System unavailable"}
+        <div className={`status-bar ${status}`}>
+          <span>{STATUS_LABELS[status]}</span>
+          {status === "down" && (
+            <button type="button" className="btn-retry" onClick={retry}>
+              Réessayer
+            </button>
+          )}
         </div>
       </div>
 
+      {status === "waking" && (
+        <p className="banner info">
+          L&apos;API est hébergée sur une offre gratuite : elle se met en veille après quelques minutes
+          d&apos;inactivité. Le premier démarrage prend jusqu&apos;à une minute.
+        </p>
+      )}
+      {status === "down" && (
+        <p className="banner error">
+          Impossible de joindre l&apos;API. Vos visages restent enregistrés sur cet appareil : la
+          reconnaissance reprendra dès que le serveur répondra.
+        </p>
+      )}
+      {error && <p className="banner error">{error}</p>}
 
-      {/* Zone centrale */}
       <section className="main">
-
         <div className="main-container">
-        {/* Sidebar gauche : compteur + vignettes */}
           <aside className="sidebar">
-            <ProfilesPanel />
+            <ProfilesPanel
+              profiles={profiles}
+              loading={loading}
+              onAdd={add}
+              onRemove={remove}
+              onClearAll={clearAll}
+            />
           </aside>
 
           <div className="live-container">
             <div className="live-indicator">
-              <div className="dot" />
-              <span>Live Detection</span>
+              <div className={`dot ${status === "ok" && cameraReady ? "live" : "idle"}`} />
+              <span>
+                Détection en direct
+                {faceCount > 0 && ` · ${faceCount} visage${faceCount > 1 ? "s" : ""}`}
+                {latencyMs != null && ` · ${latencyMs} ms`}
+                {syncState === "syncing" && " · synchronisation…"}
+              </span>
             </div>
 
-            <video ref={videoRef} autoPlay playsInline />
-            <canvas ref={overlayRef} />
+            <video ref={videoRef} autoPlay playsInline muted />
+            <canvas ref={canvasRef} />
+
+            {cameraError && <p className="camera-error">{cameraError}</p>}
           </div>
         </div>
 
-        <footer>Powered by dlib Face Recognition · React + Python</footer>
+        <footer>
+          Propulsé par dlib · React + Python — les photos ne quittent jamais votre navigateur
+        </footer>
       </section>
     </div>
   );

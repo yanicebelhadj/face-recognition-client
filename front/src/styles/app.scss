@@ -3,6 +3,7 @@ $bg-light: #f7f7f8;
 $border: #ddd;
 $green: #00ff00;
 $red: #e63946;
+$amber: #f4a300;
 $text-dark: #111;
 
 $breakpoint: 1200px;
@@ -26,9 +27,48 @@ $breakpoint: 1200px;
     .status-bar {
         margin-bottom: 16px;
         font-size: 16px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
 
+        &::before {
+          content: "";
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: #999;
+        }
+
+        &.ok::before { background: #14b364; }
+        &.waking::before { background: $amber; animation: pulse 1.2s ease-in-out infinite; }
+        &.down::before { background: $red; }
+
+        .btn-retry {
+          padding: 4px 10px;
+          border-radius: 999px;
+          border: 1px solid $border;
+          background: white;
+          font-size: 12px;
+          font-family: inherit;
+          cursor: pointer;
+
+          &:hover { background: #f0f0f0; }
+        }
       }
   }
+
+  // Message contextuel pleine largeur (réveil de l'API, erreur de synchro…).
+  .banner {
+    margin: 0;
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.45;
+
+    &.info { background: #fff6e5; color: #7a4b00; border: 1px solid #ffe0a3; }
+    &.error { background: #fdecee; color: #8a1c28; border: 1px solid #f5c2c8; }
+  }
+
   // Profiles panel
   .profiles-panel {
     h2 {
@@ -46,6 +86,34 @@ $breakpoint: 1200px;
         font-size: 12px;
         font-weight: 500;
       }
+    }
+
+    .privacy-note {
+      margin: 0 0 12px;
+      font-size: 11px;
+      line-height: 1.4;
+      color: #6b6b6b;
+    }
+
+    .muted {
+      margin: 0;
+      font-size: 12px;
+      color: #888;
+    }
+
+    .btn-clear {
+      width: 100%;
+      margin-top: 8px;
+      padding: 6px;
+      border-radius: 8px;
+      border: none;
+      background: transparent;
+      font-size: 12px;
+      font-family: inherit;
+      color: $red;
+      cursor: pointer;
+
+      &:hover { background: #fdecee; }
     }
 
     .profiles {
@@ -68,6 +136,21 @@ $breakpoint: 1200px;
             border-radius: 8px;
             border: 1px solid $border;
             display: block;
+          }
+
+          // Repli si la photo locale n'est plus disponible (stockage vidé).
+          .profile-img-fallback {
+            width: 56px;
+            height: 56px;
+            border-radius: 8px;
+            border: 1px solid $border;
+            background: #e4e4e7;
+            color: #52525b;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            font-weight: 600;
           }
 
           .delete-btn {
@@ -301,6 +384,18 @@ $breakpoint: 1200px;
         height: 100%;
         pointer-events: none;
       }
+
+      .camera-error {
+        position: absolute;
+        inset: auto 16px 16px;
+        margin: 0;
+        padding: 10px 14px;
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.72);
+        color: #fff;
+        font-size: 13px;
+        line-height: 1.4;
+      }
   
       .live-indicator {
         position: absolute;
@@ -311,10 +406,15 @@ $breakpoint: 1200px;
         gap: 6px;
   
         .dot {
-            width: 16px;
-            height: 16px;
+            width: 12px;
+            height: 12px;
             border-radius: 50%;
-            background: #ff0000;
+            background: #9ca3af;
+
+            &.live {
+              background: #ff2d2d;
+              animation: pulse 1.4s ease-in-out infinite;
+            }
         }
   
         span {
@@ -389,3 +489,16 @@ $breakpoint: 1200px;
   }
 }
 
+
+// Pulsation partagée par l'indicateur live et la barre d'état « en réveil ».
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-container .status-bar::before,
+  .app-container .live-indicator .dot.live {
+    animation: none;
+  }
+}

@@ -1,0 +1,25 @@
+# Déploiement gratuit sur Render (plan "free").
+#
+# Rappels sur ce plan :
+#  - l'instance s'endort après ~15 min sans trafic ; le premier appel qui la
+#    réveille met 30 à 60 s. Le front gère ce réveil explicitement (bannière
+#    « démarrage du serveur ») au lieu d'afficher une erreur.
+#  - le disque est éphémère : rien n'y est écrit. Les visages vivent dans le
+#    navigateur (IndexedDB) et sont rejoués vers l'API au besoin.
+services:
+  - type: web
+    name: face-recognition-api
+    runtime: docker
+    plan: free
+    region: frankfurt
+    rootDir: back/face_api
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /ping
+    envVars:
+      - key: MAX_CONCURRENT_INFERENCES
+        value: "2"
+      - key: MAX_DETECT_SIDE
+        value: "480"
+      # Origines autorisées supplémentaires (séparées par des virgules).
+      - key: EXTRA_CORS_ORIGINS
+        sync: false

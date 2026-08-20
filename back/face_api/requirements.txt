@@ -1,7 +1,18 @@
+# Python 3.11 (cf. runtime.txt) — toutes ces dépendances existent en wheel
+# précompilée pour cp311/manylinux : pas de compilation, donc un build qui tient
+# dans les limites d'un plan gratuit.
 fastapi==0.115.11
-uvicorn==0.35.0
+uvicorn[standard]==0.35.0
 python-multipart==0.0.9
-imutils==0.5.4
 Pillow==10.4.0
 numpy==1.26.4
-opencv-python-headless==4.9.0.80
+
+# dlib-bin = dlib officiel distribué en wheel précompilée. Le paquet `dlib`
+# source exige cmake + plusieurs minutes de compilation C++, ce qui fait
+# régulièrement échouer les builds sur les offres gratuites.
+dlib-bin==19.24.6
+
+# Fournit les modèles dlib pré-entraînés (.dat). Les récupérer via pip plutôt
+# que par un téléchargement HTTP pendant le build rend celui-ci reproductible
+# et insensible aux indisponibilités de dlib.net / GitHub.
+face-recognition-models==0.3.0

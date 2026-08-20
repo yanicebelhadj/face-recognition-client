@@ -1,118 +1,222 @@
 # face_core.py
-import cv2
+"""
+Cœur « reconnaissance faciale » : détection, encodage (embedding 128-D), matching.
+
+Ce module est volontairement **sans état** et **sans I/O disque** : il ne connaît
+ni les utilisateurs, ni les sessions, ni les fichiers photo. Il transforme des
+pixels en vecteurs. C'est `sessions.py` qui décide à qui appartient quoi.
+
+Les modèles dlib sont chargés paresseusement et une seule fois : sur une
+instance gratuite (512 Mo de RAM) on ne charge que le strict nécessaire.
+"""
+from __future__ import annotations
+
+import io
+import os
+import threading
+
 import dlib
 import numpy as np
-from PIL import Image
-from imutils import face_utils
-from pathlib import Path
-import os, ntpath
+from PIL import Image, ImageOps
 
-# ---------- Load pretrained models ----------
-pose_predictor_68_point = dlib.shape_predictor("pretrained_model/shape_predictor_68_face_landmarks.dat")
-pose_predictor_5_point  = dlib.shape_predictor("pretrained_model/shape_predictor_5_face_landmarks.dat")
-face_encoder            = dlib.face_recognition_model_v1("pretrained_model/dlib_face_recognition_resnet_model_v1.dat")
-face_detector           = dlib.get_frontal_face_detector()
+from model_store import ensure_model
 
-def _transform(image, face_locations):
-    coords = []
-    for face in face_locations:
-        rect = face.top(), face.right(), face.bottom(), face.left()
-        coord = max(rect[0],0), min(rect[1], image.shape[1]), min(rect[2], image.shape[0]), max(rect[3],0)
-        coords.append(coord)
-    return coords
+# Le prédicteur 5 points est celui utilisé par l'exemple officiel dlib pour la
+# reconnaissance faciale : ~10 Mo au lieu de ~100 Mo, et plus rapide, pour une
+# qualité d'embedding équivalente.
+SHAPE_PREDICTOR = "shape_predictor_5_face_landmarks.dat"
 
-def encode_face(image_rgb_np: np.ndarray):
+EMBEDDING_DIM = 128
+
+# Taille max de l'image envoyée au détecteur. Au-delà, dlib devient très lent
+# sans gagner en précision sur des visages proches de la caméra.
+MAX_DETECT_SIDE = int(os.getenv("MAX_DETECT_SIDE", "640"))
+
+# Distance euclidienne au-delà de laquelle deux visages sont considérés
+# différents. 0.6 est le seuil de référence de dlib.
+DEFAULT_TOLERANCE = float(os.getenv("FACE_TOLERANCE", "0.6"))
+
+_load_lock = threading.Lock()
+
+# Les objets modèles dlib ne sont PAS réentrants : deux appels simultanés sur la
+# même instance corrompent son état interne et font tomber le process sur un
+# segfault (pas une exception — tout le serveur meurt, d'où les coupures
+# intermittentes). On sérialise donc chaque appel.
+#
+# Ce n'est pas une perte : l'inférence dlib est mono-thread et sature déjà un
+# cœur, et l'alternative (une instance par thread) coûterait ~32 Mo de RAM
+# supplémentaires par thread.
+_inference_lock = threading.RLock()
+
+_detector = None
+_shape_predictor = None
+_encoder = None
+
+
+# --------------------------------------------------------------------------- #
+# Chargement des modèles
+# --------------------------------------------------------------------------- #
+def _load_models() -> None:
+    global _detector, _shape_predictor, _encoder
+    if _encoder is not None:
+        return
+    with _load_lock:
+        if _encoder is not None:
+            return
+        detector = dlib.get_frontal_face_detector()
+        shape_predictor = dlib.shape_predictor(str(ensure_model(SHAPE_PREDICTOR)))
+        encoder = dlib.face_recognition_model_v1(
+            str(ensure_model("dlib_face_recognition_resnet_model_v1.dat"))
+        )
+        _detector, _shape_predictor, _encoder = detector, shape_predictor, encoder
+
+
+def warmup() -> None:
+    """Charge les modèles et fait tourner une inférence à blanc."""
+    _load_models()
+    detect(np.zeros((120, 120, 3), dtype=np.uint8))
+
+
+def models_ready() -> bool:
+    return _encoder is not None
+
+
+# --------------------------------------------------------------------------- #
+# Décodage d'image
+# --------------------------------------------------------------------------- #
+def decode_image(data: bytes, max_side: int = MAX_DETECT_SIDE) -> np.ndarray:
     """
-    image_rgb_np: ndarray RGB (uint8)
-    returns: enc_list, boxes, landmarks_list
+    bytes (jpeg/png/…) -> ndarray RGB uint8 contigu, redimensionné pour que le
+    plus grand côté ne dépasse pas `max_side`.
+
+    `exif_transpose` évite les photos de téléphone détectées « couchées ».
     """
-    img = np.ascontiguousarray(image_rgb_np, dtype=np.uint8)
-    face_locations = face_detector(img, 1)
-    enc_list, landmarks_list = [], []
-    for face_location in face_locations:
-        shape = pose_predictor_68_point(img, face_location)
-        face_encoding = face_encoder.compute_face_descriptor(img, shape, 1)
-        enc_list.append(np.array(face_encoding))
-        landmarks_list.append(face_utils.shape_to_np(shape))
-    boxes = _transform(img, face_locations)
-    return enc_list, boxes, landmarks_list
+    image = Image.open(io.BytesIO(data))
+    image = ImageOps.exif_transpose(image)
+    image = image.convert("RGB")
 
-def load_known_faces(directory: str):
+    width, height = image.size
+    longest = max(width, height)
+    if max_side and longest > max_side:
+        ratio = max_side / longest
+        image = image.resize((max(1, round(width * ratio)), max(1, round(height * ratio))), Image.LANCZOS)
+
+    return np.ascontiguousarray(np.array(image), dtype=np.uint8)
+
+
+# --------------------------------------------------------------------------- #
+# Détection / encodage
+# --------------------------------------------------------------------------- #
+def _resize(rgb: np.ndarray, factor: float) -> np.ndarray:
+    """Agrandit/réduit une image RGB (via PIL — évite d'embarquer OpenCV)."""
+    height, width = rgb.shape[:2]
+    resized = Image.fromarray(rgb).resize(
+        (max(1, round(width * factor)), max(1, round(height * factor))), Image.BICUBIC
+    )
+    return np.ascontiguousarray(np.array(resized), dtype=np.uint8)
+
+
+def _rect_area(rect) -> int:
+    return (rect.right() - rect.left()) * (rect.bottom() - rect.top())
+
+
+def _to_box(rect, shape) -> list[int]:
+    """dlib.rectangle -> [top, right, bottom, left] borné à l'image."""
+    height, width = shape[:2]
+    return [
+        max(rect.top(), 0),
+        min(rect.right(), width),
+        min(rect.bottom(), height),
+        max(rect.left(), 0),
+    ]
+
+
+def detect(rgb: np.ndarray, upsample: int = 0) -> list:
+    _load_models()
+    with _inference_lock:
+        return list(_detector(rgb, upsample))
+
+
+def encode(rgb: np.ndarray, rect, jitters: int = 0) -> np.ndarray:
+    _load_models()
+    with _inference_lock:
+        shape = _shape_predictor(rgb, rect)
+        descriptor = _encoder.compute_face_descriptor(rgb, shape, jitters)
+    return np.asarray(descriptor, dtype=np.float32)
+
+
+def detect_and_encode(rgb: np.ndarray, upsample: int = 0, jitters: int = 0):
     """
-    Charge toutes les images .jpg/.jpeg/.png (casse indifférente), détecte le
-    plus grand visage, calcule l'embedding, et NE GARDE que les succès.
-    Retourne (encodings: np.ndarray[N,128], names: List[str]).
+    Chemin « temps réel » : tous les visages de la frame.
+
+    Retourne (boxes, embeddings) où boxes est une liste [top, right, bottom, left]
+    exprimée dans le repère de `rgb`.
     """
-    base = Path(directory)
-    # Extensions en min/MAJ + récursif
-    exts = ["*.jpg","*.jpeg","*.png","*.JPG","*.JPEG","*.PNG"]
-    files = []
-    for e in exts:
-        files += list(base.rglob(e))
+    rects = detect(rgb, upsample)
+    boxes, embeddings = [], []
+    for rect in rects:
+        boxes.append(_to_box(rect, rgb.shape))
+        embeddings.append(encode(rgb, rect, jitters))
+    return boxes, embeddings
 
-    if not files:
-        raise ValueError(f"No faces found in directory: {base}")
 
-    encodings, names = [], []
-
-    for f in files:
-        try:
-            img = Image.open(f).convert("RGB")             # gère PNG avec alpha
-            arr = np.ascontiguousarray(np.array(img), dtype=np.uint8)
-
-            # 1er passage (upsample=1)
-            rects = face_detector(arr, 1)
-            # Si rien trouvé, on tente un upscale ×2
-            if len(rects) == 0:
-                arr2 = cv2.resize(arr, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-                rects = face_detector(arr2, 1)
-                if len(rects) > 0:
-                    # on repasse les coords dans l'échelle d'origine
-                    best = max(rects, key=lambda r: (r.right()-r.left())*(r.bottom()-r.top()))
-                    r = dlib.rectangle(int(best.left()/2), int(best.top()/2),
-                                       int(best.right()/2), int(best.bottom()/2))
-                    rects = [r]
-
-            if len(rects) == 0:
-                print(f"[SKIP] 0 visage détecté : {f.name}")
-                continue
-
-            # garde le plus grand visage s'il y en a plusieurs
-            rect = max(rects, key=lambda r: (r.right()-r.left())*(r.bottom()-r.top()))
-            shape = pose_predictor_68_point(arr, rect)
-            vec = face_encoder.compute_face_descriptor(arr, shape, 1)
-            emb = np.array(vec, dtype=np.float32)
-
-            label = f.stem.split("_")[0]
-            encodings.append(emb)
-            names.append(label)
-            print(f"[OK] {f.name} -> {label}")
-
-        except Exception as e:
-            print(f"[ERR] {f.name}: {e}")
-
-    if len(encodings) == 0:
-        return np.empty((0,128), dtype=np.float32), []
-
-    return np.stack(encodings).astype(np.float32), names
-
-def recognize_on_frame(frame_bgr: np.ndarray, known_encodings: np.ndarray, known_names, tolerance: float = 0.6):
+def embed_largest_face(rgb: np.ndarray) -> tuple[np.ndarray | None, list[int] | None]:
     """
-    frame_bgr: image OpenCV (BGR)
-    returns: (boxes, names_out, landmarks_list)
+    Chemin « enrôlement » : on ne garde que le plus grand visage, et on insiste
+    (upsample puis agrandissement ×2) car une photo de profil ratée à
+    l'inscription rend tout le reste inutile.
+
+    Retourne (embedding, box) ou (None, None) si aucun visage n'est trouvé.
     """
-    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    rgb = np.ascontiguousarray(rgb, dtype=np.uint8)
-    encs, boxes, landmarks_list = encode_face(rgb)
+    rects = detect(rgb, upsample=1)
 
-    if known_encodings is None or (hasattr(known_encodings, "size") and known_encodings.size == 0):
-        return boxes, ["Unknown"] * len(encs), landmarks_list
+    if not rects:
+        # Dernier recours : on agrandit l'image, utile pour les petits visages.
+        upscaled = _resize(rgb, 2.0)
+        upscaled_rects = detect(upscaled, upsample=1)
+        if not upscaled_rects:
+            return None, None
+        best = max(upscaled_rects, key=_rect_area)
+        # jitters=1 : une passe de ré-échantillonnage, un peu plus robuste que 0
+        # pour une image de référence qu'on n'encode qu'une fois.
+        embedding = encode(upscaled, best, jitters=1)
+        box = _to_box(
+            dlib.rectangle(best.left() // 2, best.top() // 2, best.right() // 2, best.bottom() // 2),
+            rgb.shape,
+        )
+        return embedding, box
 
-    names_out = []
-    for enc in encs:
-        if enc is None or len(enc) == 0:
-            names_out.append("Unknown"); continue
-        dists = np.linalg.norm(known_encodings - enc, axis=1)
-        idx = int(np.argmin(dists))
-        names_out.append(known_names[idx] if dists[idx] <= tolerance else "Unknown")
-    return boxes, names_out, landmarks_list
+    best = max(rects, key=_rect_area)
+    return encode(rgb, best, jitters=1), _to_box(best, rgb.shape)
+
+
+# --------------------------------------------------------------------------- #
+# Matching
+# --------------------------------------------------------------------------- #
+def match(
+    embeddings: list[np.ndarray],
+    known_matrix: np.ndarray | None,
+    known_names: list[str],
+    tolerance: float = DEFAULT_TOLERANCE,
+):
+    """
+    Associe chaque embedding au nom connu le plus proche.
+
+    Retourne (names, distances) — "Unknown" et None quand rien ne correspond.
+    """
+    if known_matrix is None or known_matrix.size == 0 or not known_names:
+        return ["Unknown"] * len(embeddings), [None] * len(embeddings)
+
+    names: list[str] = []
+    distances: list[float | None] = []
+    for embedding in embeddings:
+        deltas = np.linalg.norm(known_matrix - embedding, axis=1)
+        index = int(np.argmin(deltas))
+        best = float(deltas[index])
+        if best <= tolerance:
+            names.append(known_names[index])
+            distances.append(round(best, 4))
+        else:
+            names.append("Unknown")
+            distances.append(round(best, 4))
+    return names, distances
