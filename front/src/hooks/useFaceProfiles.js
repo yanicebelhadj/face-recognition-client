@@ -2,7 +2,7 @@
  * Gestion des profils : stockage local + synchronisation avec l'API.
  *
  * Répartition des rôles :
- *   - le navigateur (IndexedDB) détient les photos et les empreintes ;
+ *   - le navigateur détient les photos et les empreintes (cf. `lib/faceStore`) ;
  *   - l'API ne détient qu'une copie en RAM des empreintes de *cette* session,
  *     copie qu'elle perd à chaque mise en veille de l'offre gratuite.
  *
@@ -13,7 +13,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError, deleteFace, destroySession, enrollFace, fetchProfiles, restoreFaces } from "../api";
-import { clearProfiles, deleteProfile, listProfiles, saveProfile } from "../lib/faceDb";
+import {
+  clearProfiles,
+  deleteProfile,
+  isPersistent,
+  listProfiles,
+  saveProfile,
+} from "../lib/faceStore";
+import { createThumbnail } from "../lib/image";
 import { resetSessionId } from "../lib/session";
 
 /** Délai minimal entre deux tentatives de synchronisation. */
@@ -29,6 +36,7 @@ export function useFaceProfiles() {
   const [loading, setLoading] = useState(true);
   const [syncState, setSyncState] = useState("idle"); // idle | syncing | synced | error
   const [error, setError] = useState("");
+  const [storageWarning, setStorageWarning] = useState("");
 
   // Miroir des profils, pour que la synchro n'ait pas à figurer dans les
   // dépendances des callbacks (et ne les recrée pas à chaque rendu).
@@ -38,7 +46,7 @@ export function useFaceProfiles() {
   const objectUrls = useRef(new Set());
 
   const revokeUrl = useCallback((url) => {
-    if (!url) return;
+    if (!url || !url.startsWith("blob:")) return;
     URL.revokeObjectURL(url);
     objectUrls.current.delete(url);
   }, []);
@@ -56,23 +64,40 @@ export function useFaceProfiles() {
     [revokeUrl],
   );
 
-  /** URL d'affichage d'une vignette, révoquée au démontage. */
+  /**
+   * URL d'affichage d'une vignette : la photo complète si le stockage a pu la
+   * garder, sinon la vignette compacte du repli `localStorage`.
+   */
   const toDisplayable = useCallback((profile) => {
-    if (!profile.photo) return { ...profile, photoUrl: null };
-    const photoUrl = URL.createObjectURL(profile.photo);
-    objectUrls.current.add(photoUrl);
-    return { ...profile, photoUrl };
+    if (profile.photo) {
+      const photoUrl = URL.createObjectURL(profile.photo);
+      objectUrls.current.add(photoUrl);
+      return { ...profile, photoUrl };
+    }
+    return { ...profile, photoUrl: profile.thumbnail || null };
+  }, []);
+
+  const noteStorageLimits = useCallback(async () => {
+    setStorageWarning(
+      (await isPersistent())
+        ? ""
+        : "Ce navigateur n'autorise pas le stockage local (navigation privée ou navigateur intégré) : " +
+            "vos visages seront perdus à la fermeture de l'onglet.",
+    );
   }, []);
 
   /**
    * Aligne l'API sur le contenu local. Idempotent : les appels concurrents
    * partagent la même promesse.
+   *
+   * @param {object} options
+   * @param {boolean} options.force  ignore le palier anti-rafale
    */
-  const syncToServer = useCallback(async () => {
+  const syncToServer = useCallback(async ({ force = false } = {}) => {
     if (syncingRef.current) return syncingRef.current;
     // La boucle vidéo signale l'écart à chaque frame : sans ce palier, un
     // serveur qui refuse la restauration serait sollicité dix fois par seconde.
-    if (Date.now() - lastSyncRef.current < SYNC_COOLDOWN_MS) return false;
+    if (!force && Date.now() - lastSyncRef.current < SYNC_COOLDOWN_MS) return false;
     lastSyncRef.current = Date.now();
 
     const run = (async () => {
@@ -81,8 +106,7 @@ export function useFaceProfiles() {
       try {
         const remote = await fetchProfiles();
         const remoteIds = new Set((remote.profiles || []).map((p) => p.id));
-        const aligned =
-          remoteIds.size === local.length && local.every((p) => remoteIds.has(p.id));
+        const aligned = remoteIds.size === local.length && local.every((p) => remoteIds.has(p.id));
 
         if (!aligned) {
           await restoreFaces(toRestorePayload(local));
@@ -92,10 +116,14 @@ export function useFaceProfiles() {
         return true;
       } catch (cause) {
         setSyncState("error");
+        // Sans profil local, il n'y a rien à resynchroniser : inutile d'alarmer
+        // l'utilisateur pour une opération qui ne lui apporte rien.
         setError(
-          cause instanceof ApiError && cause.status
-            ? `Synchronisation impossible : ${cause.message}`
-            : "Serveur injoignable : la reconnaissance reprendra automatiquement.",
+          local.length === 0
+            ? ""
+            : cause instanceof ApiError && cause.status
+              ? `Synchronisation impossible : ${cause.message}`
+              : "Serveur injoignable : la reconnaissance reprendra automatiquement.",
         );
         return false;
       } finally {
@@ -107,26 +135,27 @@ export function useFaceProfiles() {
     return run;
   }, []);
 
-  // Chargement initial depuis IndexedDB, puis alignement de l'API.
+  // Chargement initial depuis le stockage local.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const stored = await listProfiles();
-        if (cancelled) return;
-        publish(stored.map(toDisplayable));
+        if (!cancelled) publish(stored.map(toDisplayable));
       } catch {
-        if (!cancelled) setError("Stockage local indisponible : les profils ne seront pas conservés.");
+        if (!cancelled) {
+          setStorageWarning("Stockage local indisponible : les profils ne seront pas conservés.");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
-      if (!cancelled) syncToServer();
+      if (!cancelled) await noteStorageLimits();
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [publish, syncToServer, toDisplayable]);
+  }, [noteStorageLimits, publish, toDisplayable]);
 
   // Libération des URLs d'objets au démontage.
   useEffect(
@@ -142,30 +171,44 @@ export function useFaceProfiles() {
       const name = rawName.trim();
       const { profile } = await enrollFace(name, file);
 
+      // La vignette sert au repli `localStorage`, qui ne peut pas garder la
+      // photo d'origine. On la calcule ici, une fois pour toutes.
       const record = {
         id: profile.id,
         name: profile.name,
         embedding: profile.embedding,
         photo: file,
+        thumbnail: await createThumbnail(file),
         createdAt: Date.now(),
       };
-      await saveProfile(record);
 
       // Un nom = un profil : l'API remplace, le stockage local doit suivre.
-      const replaced = profilesRef.current.filter(
+      const duplicates = profilesRef.current.filter(
+        (p) => p.name.toLowerCase() === record.name.toLowerCase(),
+      );
+      const kept = profilesRef.current.filter(
         (p) => p.name.toLowerCase() !== record.name.toLowerCase(),
       );
-      await Promise.all(
-        profilesRef.current
-          .filter((p) => p.name.toLowerCase() === record.name.toLowerCase())
-          .map((p) => deleteProfile(p.id)),
-      );
 
-      publish([...replaced, toDisplayable(record)]);
+      // Le visage est déjà enrôlé côté API : un stockage local défaillant ne
+      // doit pas faire échouer l'ajout, seulement priver l'utilisateur de la
+      // persistance. C'est le cas des navigateurs intégrés (WhatsApp, iOS).
+      try {
+        await Promise.all(duplicates.map((p) => deleteProfile(p.id)));
+        await saveProfile(record);
+      } catch {
+        setStorageWarning(
+          "Ce navigateur refuse d'enregistrer vos photos : elles resteront actives " +
+            "le temps de la visite, mais seront perdues à la fermeture de l'onglet.",
+        );
+      }
+      await noteStorageLimits();
+
+      publish([...kept, toDisplayable(record)]);
       setSyncState("synced");
       return record;
     },
-    [publish, toDisplayable],
+    [noteStorageLimits, publish, toDisplayable],
   );
 
   const remove = useCallback(
@@ -177,7 +220,11 @@ export function useFaceProfiles() {
         // localement reste la bonne action.
         if (!(cause instanceof ApiError && cause.status === 404)) throw cause;
       }
-      await deleteProfile(id);
+      try {
+        await deleteProfile(id);
+      } catch {
+        /* le stockage local est déjà signalé comme défaillant */
+      }
       publish(profilesRef.current.filter((p) => p.id !== id));
     },
     [publish],
@@ -190,11 +237,26 @@ export function useFaceProfiles() {
     } catch {
       /* l'API a peut-être déjà oublié la session : sans importance */
     }
-    await clearProfiles();
+    try {
+      await clearProfiles();
+    } catch {
+      /* idem côté stockage local */
+    }
     resetSessionId();
     publish([]);
     setSyncState("synced");
+    setError("");
   }, [publish]);
 
-  return { profiles, loading, syncState, error, add, remove, clearAll, syncToServer, setError };
+  return {
+    profiles,
+    loading,
+    syncState,
+    error,
+    storageWarning,
+    add,
+    remove,
+    clearAll,
+    syncToServer,
+  };
 }
